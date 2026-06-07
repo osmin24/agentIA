@@ -1,49 +1,46 @@
 ## Problem Statement
 
-El chatbot actualmente responde exclusivamente con texto. Los usuarios necesitan una forma de consumir las respuestas de manera auditiva para mejorar la accesibilidad y permitir una interacción más fluida y natural con los materiales educativos, sin depender únicamente de la lectura en pantalla.
+El proyecto RAG Chatbot necesita varias mejoras estructurales y funcionales para asegurar su robustez. Por un lado, el chatbot actualmente responde exclusivamente con texto, lo que limita la accesibilidad. Por otro lado, la aplicación carece de validaciones de entrada seguras para los usuarios, no maneja correctamente caídas por límites de la API de terceros (Anthropic), no cuenta con pruebas en la gestión de sesiones y sufre de falta de visibilidad interna en producción por carecer de un sistema de logging estructurado.
 
 ## Solution
 
-Implementar un sistema de Text-to-Speech (TTS) integrado en el chatbot que genere un mensaje de voz por cada respuesta de la IA. El sistema utilizará un modelo local (Piper TTS) para evitar costos de API. Se usará una estrategia de carga diferida (lazy loading) donde el frontend recibe el texto inmediatamente junto con una URL de audio. El navegador solicitará la URL, y el backend generará o recuperará de caché el archivo de audio (.wav) para reproducirlo.
+Se abordará una actualización integral que unificará cinco pilares de mejora:
+1. **Text-to-Speech (TTS):** Implementación de voz mediante el motor local `piper-tts` con estrategia de "lazy loading" (carga diferida).
+2. **Validación de Consultas:** Protección contra payloads gigantes limitando la entrada del usuario a 1000 caracteres (HTTP 400).
+3. **Robustez de la API (Anthropic):** Intercepción de errores de Rate Limit (`429 Too Many Requests`) para enviar mensajes controlados al usuario en lugar de quebrar el servidor con errores 500.
+4. **Visibilidad (Logging):** Reemplazar llamadas nativas a `print()` por el módulo estándar de `logging` en Python.
+5. **Calidad de Código (TDD):** Implementación de la primera suite de pruebas unitarias dirigidas específicamente a `SessionManager`.
 
 ## User Stories
 
-1. Como usuario, quiero hacer una pregunta al chatbot y ver la respuesta de texto inmediatamente, para no tener que esperar a que el audio termine de generarse.
-2. Como usuario, quiero escuchar la respuesta generada por la IA con una voz natural, para poder comprender el material mientras hago otras cosas o descanso la vista.
-3. Como administrador, quiero que el sistema de voz no genere costos recurrentes de API, utilizando modelos open source locales.
-4. Como administrador, quiero que el servidor limpie automáticamente los archivos de audio antiguos generados, para que el disco duro no se llene.
-5. Como usuario, quiero poder volver a reproducir un audio sin demora, gracias al sistema de caché temporal del backend.
-6. Como desarrollador, quiero aislar la complejidad de la generación de voz en un servicio independiente, para que el archivo de rutas (app.py) se mantenga limpio y testeable.
+1. Como usuario, quiero hacer una pregunta al chatbot y ver la respuesta de texto inmediatamente, sin esperar a que el audio termine. (TTS)
+2. Como usuario, quiero escuchar la respuesta generada por la IA con una voz natural, para interactuar de forma auditiva. (TTS)
+3. Como sistema, necesito rechazar automáticamente con un código 400 las consultas mayores a 1000 caracteres, para proteger la base de datos vectorial y no exceder los límites de Anthropic. (Issue 01)
+4. Como desarrollador, quiero contar con pruebas automatizadas para `SessionManager`, para garantizar que el historial se guarda y recupera sin fallos tras futuras modificaciones. (Issue 02)
+5. Como usuario, si la IA de Anthropic está saturada, quiero recibir un aviso amigable ("Servicio experimentando alta demanda") en lugar de ver que la aplicación simplemente deja de funcionar. (Issue 03)
+6. Como administrador de sistemas/DevOps, quiero visualizar logs estructurados (INFO, WARNING, ERROR) de las peticiones en el backend, para depurar ágilmente. (Issue 04)
+7. Como administrador, quiero que el servidor borre periódicamente el caché de audios (`temp_audio/`) para no saturar el disco. (TTS)
 
 ## Implementation Decisions
 
-- **Modelo TTS**: Se usará `piper-tts` con el modelo `es_MX-ald-medium` (Español de México).
-- **Módulos**:
-  - Se creará un módulo profundo en `backend/tts_service.py` que encapsulará la carga del modelo, la escritura en disco y la limpieza de archivos, exponiendo una interfaz muy sencilla.
-- **Cambios en Interfaces**:
-  - El modelo `QueryResponse` en `app.py` se modificará para incluir un campo opcional `audio_url`.
-- **API Contracts**:
-  - `POST /api/query`: Devolverá el JSON de siempre más `audio_url` (ej. `/api/audio/12345`).
-  - `GET /api/audio/{audio_id}`: Devolverá el archivo binario de audio. Si no existe, esperará pasivamente (timeout de 30s) o retornará 404.
-- **Interacciones Específicas**:
-  - La generación de audio se encolará usando `BackgroundTasks` de FastAPI durante la llamada a `/api/query`.
-- **UI**: El frontend (`script.js`) detectará `audio_url` e inyectará un `<audio controls autoplay>` en la burbuja del mensaje.
+- **TTS**: Descarga y ejecución de modelo ONNX de Piper (Español) en `backend/tts_service.py`. Encolamiento en segundo plano (`BackgroundTasks`).
+- **Validación de Input**: Usar validación en los modelos Pydantic (`QueryRequest`) o comprobación explícita en el endpoint `/api/query`.
+- **Manejo de API Externa**: Captura de `anthropic.RateLimitError` y `anthropic.APIConnectionError` en `ai_generator.py` retornando strings seguros en vez de lanzar excepciones no manejadas.
+- **Logs**: Importar `logging` en `app.py`, configurar un nivel básico (`INFO`) e inyectarlo en los puntos críticos de la aplicación.
+- **Tests**: Archivo `test_session_manager.py` usando `pytest` para verificar inicialización, persistencia e historiales inexistentes.
 
 ## Testing Decisions
 
-- Un buen test debe probar que si un usuario realiza una consulta, eventualmente puede acceder al audio a través de la URL proporcionada, sin preocuparse de si se usa Piper, Coqui o una API en el fondo.
-- Se escribirán tests de integración en `tests/` (si el entorno TDD los requiere) que:
-  1. Hagan un `POST /api/query` mockeando el LLM.
-  2. Verifiquen que la respuesta incluye un `audio_url`.
-  3. Aseguren que el llamado a `GET` en ese `audio_url` retorna un archivo de audio válido tras la generación en segundo plano.
+- Test unitario: Enviar consulta de >1000 caracteres mediante `TestClient` (FastAPI) y afirmar un status code 400.
+- Test unitario/Mocking: Usar `unittest.mock` sobre el cliente de Anthropic para forzar un `RateLimitError` y comprobar la salida gracefully controlada.
+- Test de logs: Realizar peticiones simuladas y verificar la salida del logger (opcional mediante fixtures de pytest como `caplog`).
 
 ## Out of Scope
 
-- Modelos de pago como OpenAI TTS o ElevenLabs.
-- Transmisión por WebSockets en tiempo real (streaming directo de bits).
-- Seleccionar voces dinámicamente desde el frontend.
-- Historial persistente de audios de sesiones pasadas más allá de las 24 horas.
+- Proveedores TTS Cloud (OpenAI, Google) o web sockets (streaming binario).
+- Integración de sistemas de logs externos (Datadog, Kibana). El alcance se limita a log estándar de consola.
+- Reintentos automáticos sofisticados (Exponential Backoff) con la API de Anthropic.
 
 ## Further Notes
 
-- El modelo ONNX se descargará automáticamente la primera vez que arranque el servicio TTS. Esto puede causar un leve retraso en el primer inicio de la aplicación en un servidor limpio.
+- El documento ha sido unificado combinando el nuevo *Feature* (TTS) con la deuda técnica previa documentada en los issues (01 al 04). Todas las tareas están listas para su abordaje en paralelo o secuencia.
