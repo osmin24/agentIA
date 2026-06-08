@@ -57,34 +57,37 @@ Provide only the direct answer to what was asked.
             Generated response as string
         """
         
-        # Build system content efficiently - avoid string ops when possible
-        system_content = (
-            f"{self.SYSTEM_PROMPT}\n\nPrevious conversation:\n{conversation_history}"
-            if conversation_history 
-            else self.SYSTEM_PROMPT
-        )
-        
-        # Prepare API call parameters efficiently
-        api_params = {
-            **self.base_params,
-            "messages": [{"role": "user", "content": query}],
-            "system": system_content
-        }
-        
-        # Add tools if available
-        if tools:
-            api_params["tools"] = tools
-            api_params["tool_choice"] = {"type": "auto"}
-        
-        # Get response from Claude
-        response = self.client.messages.create(**api_params)
-        
-        # Handle tool execution if needed
-        if response.stop_reason == "tool_use" and tool_manager:
-            return self._handle_tool_execution(response, api_params, tool_manager)
-        
-        # Return direct response
-        return response.content[0].text
+        try:
+            # Build system content efficiently - avoid string ops when possible
+            system_content = (
+                f"{self.SYSTEM_PROMPT}\n\nPrevious conversation:\n{conversation_history}"
+                if conversation_history 
+                else self.SYSTEM_PROMPT
+            )
+            
+            # Prepare API call parameters efficiently
+            api_params = {
+                **self.base_params,
+                "messages": [{"role": "user", "content": query}],
+                "system": system_content
+            }
+            
+            # Add tools if available
+            if tools:
+                api_params["tools"] = tools
+                api_params["tool_choice"] = {"type": "auto"}
+            
+            # Get response from Claude
+            response = self.client.messages.create(**api_params)
+            
+            # Handle tool execution if needed
+            if response.stop_reason == "tool_use" and tool_manager:
+                return self._handle_tool_execution(response, api_params, tool_manager)
+            
+            # Return direct response
+            return response.content[0].text
+        except (anthropic.RateLimitError, anthropic.APIConnectionError):
+            return "El servicio está experimentado alta demanda, por favor intenta en unos segundos"
     
     def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
         """

@@ -1,6 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore", message="resource_tracker: There appear to be.*")
-pyrefly: ignore [missing-import]
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -56,6 +56,9 @@ class CourseStats(BaseModel):
 @app.post("/api/query", response_model=QueryResponse)
 async def query_documents(request: QueryRequest):
     """Process a query and return response with sources"""
+    if len(request.query) > 1000:
+        raise HTTPException(status_code=400, detail="La consulta es demasiado larga")
+        
     try:
         # Create session if not provided
         session_id = request.session_id
