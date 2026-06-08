@@ -1,0 +1,256 @@
+URL:https://osmin24.github.io/Sitio-web-de-viaje/#s3 
+
+================================================================================
+  SOFTWARE JOURNEY — CHATBOT RAG CON INTELIGENCIA ARTIFICIAL
+  Bitácora de co-creación hombre–máquina · 2026
+================================================================================
+
+Stack: FastAPI · RAG · TTS
+Agente: Ralph Loop (./ralph/once.sh)
+Skills usadas: grill-me · tdd · handoff · improve-codebase-architecture
+
+Commits representativos:
+  31fe782  docs: Mejorar profesionalidad y estructura del README.md
+  56f5174  chore(deps): Agregar dependencias de desarrollo pytest y mypy
+  27d8dc2  feat(workflow): Integrar flujo de trabajo de Agente AFK
+  afe4036  updated lab files
+  5d515fb  added lab files
+
+
+================================================================================
+  SECCIÓN 01 — LA BALA TRAZADORA Y EL ENRUTAMIENTO DE SKILLS
+================================================================================
+
+Antes de escribir la primera línea de código, la skill /grill-me actuó como
+una entrevista socrática que forzó al equipo a articular lo que realmente no
+sabía del dominio. El resultado alteró radicalmente las asunciones iniciales.
+
+  "La Bala Trazadora no es un prototipo desechable. Es el primer disparo real
+   que cruza todas las capas del sistema para probar que el camino existe."
+   — Adaptación de A Philosophy of Software Design, Ousterhout
+
+
+FASE 0 — /grill-me
+-------------------
+El agente entrevistó al equipo durante ~25 preguntas. Descubrimiento clave:
+la asunción inicial era que el sistema solo necesitaba búsqueda por keywords.
+La skill reveló que el riesgo real estaba en la coherencia de sesión: ¿cómo
+recuerda el bot el hilo de la conversación entre preguntas del mismo usuario?
+
+
+FASE 1 — Identificación del issue más incierto
+-----------------------------------------------
+El issue de mayor riesgo de integración fue la combinación RAG + Gestión de
+Sesión + TTS en un solo endpoint. Si ese seam no funcionaba, todo lo demás
+era irrelevante. Ralph atacó ese issue primero.
+
+
+FASE 2 — Feedback temprano de arquitectura
+-------------------------------------------
+Al forzar POST /api/query a devolver session_id, sources y audio_url en el
+mismo response, el equipo descubrió que la generación de audio era bloqueante.
+La solución: BackgroundTasks de FastAPI. Esta decisión surgió en el primer
+sprint, no al final.
+
+
+FASE 3 — PRD → Issues → Ralph Loop
+-------------------------------------
+Con la arquitectura central validada, /prd-to-issues descompuso el PRD en
+vertical slices ejecutables. ./ralph/once.sh procesó cada ticket en ciclo
+Red–Green–Refactor autónomo.
+
+
+HALLAZGOS CLAVE:
+
+  [Asunción falsificada]
+  Creíamos que la complejidad estaba en el chunking de documentos. /grill-me
+  reveló que la complejidad real era el manejo de estado conversacional entre
+  llamadas sin estado de una API REST.
+
+  [El seam de integración]
+  El punto de mayor riesgo: RAGSystem.query() llamando a SessionManager y
+  retornando a TTSService de forma asíncrona. Atacar esto primero eliminó el
+  80% del riesgo arquitectónico.
+
+  [Velocidad obtenida]
+  Al tener la bala trazadora funcionando en el issue #1, los issues
+  subsiguientes (chunking, embeddings, frontend) se desarrollaron en paralelo
+  sin bloqueos de integración.
+
+
+================================================================================
+  SECCIÓN 02 — ANATOMÍA DE LA COMPLEJIDAD
+  (Módulos Profundos vs. Módulos Superficiales)
+================================================================================
+
+Inspección quirúrgica del código generado por Ralph bajo el lente de
+Ousterhout: dónde el agente creó módulos con interfaces elegantes y profundidad
+real, y dónde atomizó innecesariamente.
+
+
+MÓDULO PROFUNDO ✓ — RAGSystem (main.py)
+-----------------------------------------
+Interfaz de DOS métodos: query() y add_course_folder()
+
+Oculta internamente:
+  - Gestión de embeddings
+  - Búsqueda vectorial
+  - Manejo de sesiones
+  - Construcción de contexto
+  - Llamada al LLM
+
+Toda esa complejidad es opaca al endpoint que la consume.
+
+Código representativo:
+
+  # Interfaz pública: solo recibe query + session_id
+  # Oculta: embeddings, vector search, LLM call, TTS scheduling
+
+  @app.post("/api/query", response_model=QueryResponse)
+  async def query_documents(request: QueryRequest,
+                             background_tasks: BackgroundTasks):
+      session_id = request.session_id or rag_system.session_manager.create_session()
+
+      # Una sola llamada oculta toda la complejidad RAG
+      answer, sources = rag_system.query(request.query, session_id)
+
+      audio_id = uuid.uuid4().hex
+      background_tasks.add_task(tts_service.generate_audio, answer, audio_id)
+
+      return QueryResponse(
+          answer=answer, sources=sources,
+          session_id=session_id,
+          audio_url=f"/api/audio/{audio_id}"
+      )
+
+
+MÓDULO SUPERFICIAL ⚠ — DevStaticFiles (fragmentación inicial)
+---------------------------------------------------------------
+Ralph generó originalmente la lógica de headers de no-caché en tres archivos
+separados. La interfaz era trivial y exponía detalles de configuración sin
+ocultar ninguna complejidad real.
+
+Código antes del refactor (helpers/cache_headers.py — eliminado):
+
+  # Ralph generó esto como módulo separado — interfaz trivial,
+  # cero complejidad oculta, puro overhead de navegación
+
+  def add_no_cache_headers(response):
+      response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+      response.headers["Pragma"] = "no-cache"
+      response.headers["Expires"] = "0"
+      return response
+
+  # → Solución: absorbido directamente en DevStaticFiles.get_response()
+  #   Reducción: 1 archivo menos, 0 imports adicionales, misma funcionalidad
+
+Directriz humana aplicada: "Si la función no oculta nada, no es un módulo,
+es ruido. Fúndela donde se usa."
+
+
+REFERENCIA — Ousterhout sobre módulos profundos:
+-------------------------------------------------
+  "A deep module is one whose interface is much simpler than its
+   implementation. The best modules are those where you can ignore
+   most of the details."
+   — A Philosophy of Software Design, Cap. 4
+
+
+FUGA DE INFORMACIÓN DETECTADA Y CORREGIDA
+------------------------------------------
+En una versión intermedia, el endpoint /api/courses retornaba directamente
+el objeto ORM con campos internos de la base de datos:
+  - chunk_id
+  - embedding_vector
+  - created_at
+
+La UI consumía esos campos, creando un acoplamiento directo al esquema de BD.
+
+CORRECCIÓN APLICADA:
+Se introdujo el modelo Pydantic CourseStats como capa de traducción explícita.
+
+  class CourseStats(BaseModel):
+      total_courses: int
+      course_titles: List[str]
+
+Los detalles de persistencia quedaron completamente ocultos. Ningún cambio al
+esquema de base de datos puede romper la interfaz de la UI.
+
+Tags de complejidad del sistema:
+  Vector Search · Session Management · Background TTS · Document Chunking
+  Embedding Pipeline · Pydantic Schemas · CORS Middleware · Static File Serving
+
+
+================================================================================
+  SECCIÓN 03 — EL VEREDICTO RETROSPECTIVO DE LOS SUB-AGENTES
+================================================================================
+
+Recuperación del Punto de Control Arquitectónico: cómo el debate entre las
+tres propuestas paralelas de /improve-codebase-architecture afectó la segunda
+mitad del sprint.
+
+
+SUB-AGENTE A — Separación estricta por capas
+---------------------------------------------
+Propuesta: dividir el sistema en domain/ / infrastructure/ / application/
+Máxima separación de responsabilidades.
+COSTO: 8 nuevos archivos, complejidad de navegación alta para equipo pequeño.
+VEREDICTO: Descartado.
+
+
+SUB-AGENTE B — Módulos por feature [ELEGIDO]
+---------------------------------------------
+Propuesta: rag_system.py · tts_service.py · config.py como módulos profundos
+independientes. Menor overhead de navegación, mayor cohesión funcional.
+VEREDICTO: Seleccionado como base de la solución híbrida.
+
+
+SUB-AGENTE C — Monolito con adaptadores
+-----------------------------------------
+Propuesta: todo en main.py con inyección de dependencias inline.
+Máxima velocidad inicial pero con alto riesgo de Change Amplification al
+escalar nuevas funcionalidades.
+VEREDICTO: Descartado.
+
+
+REFERENCIA — Ousterhout sobre buen gusto arquitectónico:
+---------------------------------------------------------
+  "Good taste in architecture means choosing interfaces that remain stable
+   as requirements evolve — not interfaces that look clean today but
+   amplify changes tomorrow."
+   — Adaptación de A Philosophy of Software Design — Change Amplification
+
+
+TABLA DE VEREDICTO — ¿Change Amplification o Elasticidad?
+----------------------------------------------------------
+
+  Módulo             | Cambio demandado              | Propagación                    | Resultado
+  -------------------|-------------------------------|--------------------------------|------------------
+  RAGSystem          | Agregar memoria por sesión    | Solo interno — 0 cambios en    | ✓ ELÁSTICO
+                     |                               | endpoints                      |
+  TTSService         | Cambiar proveedor de voz      | Solo tts_service.py            | ✓ ELÁSTICO
+  QueryResponse      | Agregar campo confidence      | Schema + endpoint + frontend   | ⚠ AMPLIFICACIÓN
+                     |                               |                                |   MENOR
+  Startup Event      | Múltiples fuentes de docs     | Solo startup_event()           | ✓ ELÁSTICO
+
+
+CONCLUSIÓN RETROSPECTIVA
+------------------------
+La elección del Sub-agente B (módulos por feature) demostró ser la correcta.
+Los últimos 3 issues del sprint añadieron funcionalidades nuevas sin requerir
+modificaciones en cascada.
+
+El único punto de amplificación fue el schema de respuesta QueryResponse, lo
+cual es predecible y aceptable en una API pública que evoluciona.
+
+La arquitectura mostró BUEN GUSTO en el sentido de Ousterhout: las interfaces
+se mantuvieron estables mientras la implementación interna evolucionó
+libremente. El módulo RAGSystem absorbió cambios internos significativos
+(adición de memoria conversacional, ajuste de parámetros de chunking) sin que
+ningún caller externo tuviera que modificarse.
+
+
+================================================================================
+  CONSTRUIDO CON CLAUDE · AI HERO FRAMEWORK · 2026
+  Software Journey — Ingeniería Agéntica · Todos los commits son reales
+================================================================================

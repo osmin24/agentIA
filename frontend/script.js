@@ -82,7 +82,7 @@ async function sendMessage() {
 
         // Replace loading message with response
         loadingMessage.remove();
-        addMessage(data.answer, 'assistant', data.sources);
+        addMessage(data.answer, 'assistant', data.sources, data.audio_url);
 
     } catch (error) {
         // Replace loading message with error
@@ -110,7 +110,7 @@ function createLoadingMessage() {
     return messageDiv;
 }
 
-function addMessage(content, type, sources = null, isWelcome = false) {
+function addMessage(content, type, sources = null, audio_url = null, isWelcome = false) {
     const messageId = Date.now();
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}${isWelcome ? ' welcome-message' : ''}`;
@@ -127,6 +127,14 @@ function addMessage(content, type, sources = null, isWelcome = false) {
                 <summary class="sources-header">Sources</summary>
                 <div class="sources-content">${sources.join(', ')}</div>
             </details>
+        `;
+    }
+    
+    if (audio_url) {
+        html += `
+            <div class="audio-player">
+                <audio controls autoplay src="${audio_url}"></audio>
+            </div>
         `;
     }
     
@@ -149,7 +157,7 @@ function escapeHtml(text) {
 async function createNewSession() {
     currentSessionId = null;
     chatMessages.innerHTML = '';
-    addMessage('Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, true);
+    addMessage('Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, null, true);
 }
 
 // Load course statistics
